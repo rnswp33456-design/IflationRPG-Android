@@ -17,8 +17,9 @@ jobs:
       - name: Fetch InflationRPG web build
         run: |
           git clone --depth 1 https://github.com/GoodStudyDay/IflationRPG.git /tmp/IflationRPG
-          mkdir -p app/src/main/assets/game
-          cp -R /tmp/IflationRPG/docs/. app/src/main/assets/game/
+          rm -rf app/src/main/assets
+          mkdir -p app/src/main/assets
+          cp -R /tmp/IflationRPG/docs/. app/src/main/assets/
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -37,6 +38,6 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IflationRPG-Android-debug
+          name: IflationRPG-Android-debug-fixed
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
