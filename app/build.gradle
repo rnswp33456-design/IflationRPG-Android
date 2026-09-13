@@ -7,11 +7,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.iflationrpg.android.femaleboss"
+        applicationId "com.iflationrpg.android.femaleboss.bg"
         minSdk 23
         targetSdk 28
-        versionCode 2
-        versionName "0.0.55-femaleboss"
+        versionCode 3
+        versionName "0.0.56-bossbg"
     }
 
     buildTypes {
