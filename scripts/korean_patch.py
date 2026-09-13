@@ -49,14 +49,14 @@ vite.write_text(s, encoding="utf-8")
 # Use one dedicated image file per bossId.
 enemy_map = root / "src/data/enemyImageMap.ts"
 s = enemy_map.read_text(encoding="utf-8")
-old = """export const getBossImageUrl = (bossId: number, _difficulty: number = 0): string | undefined => {
+old = """export const getBossImageUrl = (bossId: number, difficulty: number = 0): string | undefined => {
   const difficultyMap = BOSS_IMAGE_MAP[bossId];
   if (!difficultyMap) return undefined;
   const imageName = difficultyMap[difficulty] || difficultyMap[0];
   if (!imageName) return undefined;
   return imageFileMap[imageName];
 };"""
-new = """export const getBossImageUrl = (bossId: number, difficulty: number = 0): string | undefined => {
+new = """export const getBossImageUrl = (bossId: number, _difficulty: number = 0): string | undefined => {
   return `/images/enemies/boss_fem_${bossId}.png`;
 };"""
 if old not in s:
