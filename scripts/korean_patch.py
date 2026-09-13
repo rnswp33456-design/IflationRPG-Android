@@ -1,5 +1,4 @@
 from pathlib import Path
-import re
 
 root = Path("/tmp/IflationRPG")
 
@@ -37,15 +36,15 @@ for p in targets:
     if not p.exists():
         continue
     s = p.read_text(encoding="utf-8")
-    for a,b in replacements.items():
-        s = s.replace(a,b)
-    p.write_text(s,encoding="utf-8")
+    for a, b in replacements.items():
+        s = s.replace(a, b)
+    p.write_text(s, encoding="utf-8")
 
 # Build base path suitable for WebViewAssetLoader root.
 vite = root / "vite.config.ts"
 s = vite.read_text(encoding="utf-8")
 s = s.replace("base: command === 'build' ? '/IflationRPG/' : '/',", "base: '/',")
-vite.write_text(s,encoding="utf-8")
+vite.write_text(s, encoding="utf-8")
 
 # Use one dedicated image file per bossId.
 enemy_map = root / "src/data/enemyImageMap.ts"
@@ -58,20 +57,25 @@ old = """export const getBossImageUrl = (bossId: number, difficulty: number = 0)
   return imageFileMap[imageName];
 };"""
 new = """export const getBossImageUrl = (bossId: number, difficulty: number = 0): string | undefined => {
-  return \`/images/enemies/boss_fem_\${bossId}.png\`;
+  return `/images/enemies/boss_fem_${bossId}.png`;
 };"""
 if old not in s:
     raise RuntimeError("getBossImageUrl block not found")
-s = s.replace(old, new)
+s = s.replace(old, new, 1)
 enemy_map.write_text(s, encoding="utf-8")
 
-# Boss battles: show the boss image as a full-screen battle background.
+# Boss battles: render the boss sprite as the full battle background.
 battle = root / "src/components/BattleScreen.tsx"
 s = battle.read_text(encoding="utf-8")
+
 anchor = "  const playerHpPercent = player.maxHp > 0 ? (player.hp / player.maxHp) * 100 : 0;\n"
 if anchor not in s:
     raise RuntimeError("BattleScreen playerHpPercent anchor not found")
-s = s.replace(anchor, anchor + "  const isBossBattle = Boolean(battle.enemy.imageUrl && battle.enemy.imageUrl.includes('/boss_fem_'));\n", 1)
+s = s.replace(
+    anchor,
+    anchor + "  const isBossBattle = Boolean(battle.enemy.imageUrl && battle.enemy.imageUrl.includes('/boss_fem_'));\n",
+    1,
+)
 
 bg_anchor = """        <div className="absolute inset-0 overflow-hidden">
           {/* 深空基底层 */}
@@ -82,7 +86,7 @@ bg_repl = """        <div className="absolute inset-0 overflow-hidden">
               <div
                 className="absolute inset-0 z-0"
                 style={{
-                  backgroundImage: \`url("\${battle.enemy.imageUrl}")\`,
+                  backgroundImage: `url("${battle.enemy.imageUrl}")`,
                   backgroundPosition: 'center center',
                   backgroundRepeat: 'no-repeat',
                   backgroundSize: 'contain',
@@ -95,43 +99,23 @@ bg_repl = """        <div className="absolute inset-0 overflow-hidden">
             </>
           )}
           {/* 深空基底层 */}
-          <div className={\`absolute inset-0 bg-gradient-to-b from-[#020010] via-[#0a0520] to-[#060018] \${isBossBattle ? 'opacity-35' : ''}\`} />"""
+          <div className={`absolute inset-0 bg-gradient-to-b from-[#020010] via-[#0a0520] to-[#060018] ${isBossBattle ? 'opacity-35' : ''}`} />"""
 if bg_anchor not in s:
     raise RuntimeError("BattleScreen background anchor not found")
 s = s.replace(bg_anchor, bg_repl, 1)
 
-small_img = """            {battle.enemy.imageUrl ? (
-              <img 
-                src={battle.enemy.imageUrl} 
-                alt={battle.enemy.name}
-                className="w-16 h-16 sm:w-24 sm:h-24 md:w-32 md:h-32 object-contain rounded-lg border-2 border-red-500/50 mx-auto"
-                onError={(e) => {
-                  const img = e.target as HTMLImageElement;
-                  img.style.display = 'none';
-                  img.nextElementSibling?.classList.remove('hidden');
-                }}
-              />
-            ) : null}"""
-small_repl = """            {battle.enemy.imageUrl && !isBossBattle ? (
-              <img 
-                src={battle.enemy.imageUrl} 
-                alt={battle.enemy.name}
-                className="w-16 h-16 sm:w-24 sm:h-24 md:w-32 md:h-32 object-contain rounded-lg border-2 border-red-500/50 mx-auto"
-                onError={(e) => {
-                  const img = e.target as HTMLImageElement;
-                  img.style.display = 'none';
-                  img.nextElementSibling?.classList.remove('hidden');
-                }}
-              />
-            ) : null}"""
-if small_img not in s:
-    raise RuntimeError("BattleScreen enemy image block not found")
-s = s.replace(small_img, small_repl, 1)
+small_old = "{battle.enemy.imageUrl ? ("
+if small_old not in s:
+    raise RuntimeError("BattleScreen enemy image condition not found")
+s = s.replace(small_old, "{battle.enemy.imageUrl && !isBossBattle ? (", 1)
 
-fallback = """            <div className={\`w-16 h-16 sm:w-24 sm:h-24 md:w-32 md:h-32 bg-[#3d2b6e] rounded-lg border-2 border-red-500 flex items-center justify-center mx-auto \${battle.enemy.imageUrl ? 'hidden' : ''}\`}>"""
-fallback_repl = """            <div className={\`w-16 h-16 sm:w-24 sm:h-24 md:w-32 md:h-32 bg-[#3d2b6e] rounded-lg border-2 border-red-500 flex items-center justify-center mx-auto \${battle.enemy.imageUrl || isBossBattle ? 'hidden' : ''}\`}>"""
-if fallback not in s:
-    raise RuntimeError("BattleScreen fallback block not found")
-s = s.replace(fallback, fallback_repl, 1)
+fallback_old = "${battle.enemy.imageUrl ? 'hidden' : ''}"
+if fallback_old not in s:
+    raise RuntimeError("BattleScreen fallback visibility expression not found")
+s = s.replace(
+    fallback_old,
+    "${(battle.enemy.imageUrl || isBossBattle) ? 'hidden' : ''}",
+    1,
+)
 
 battle.write_text(s, encoding="utf-8")
