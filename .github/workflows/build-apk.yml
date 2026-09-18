@@ -1,58 +1,24 @@
-name: Build APK
+name: Build Pokemon Survivor APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "pokemon-survivor" ]
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Android wrapper
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fetch InflationRPG source
-        run: git clone --depth 1 https://github.com/GoodStudyDay/IflationRPG.git /tmp/IflationRPG
-
-      - name: Apply Korean localization patch
-        run: python3 scripts/korean_patch.py
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build localized web game
-        working-directory: /tmp/IflationRPG
-        run: |
-          npm ci
-          npm run build
-
-      - name: Force Korean for existing saves
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('/tmp/IflationRPG/dist/index.html')
-          s=p.read_text(encoding='utf-8')
-          js="""<script>
-          try {
-            const k='inflation-rpg-savedata';
-            const raw=localStorage.getItem(k);
-            const d=raw ? JSON.parse(raw) : {};
-            d.language='ko';
-            localStorage.setItem(k, JSON.stringify(d));
-          } catch(e) {}
-          </script>"""
-          s=s.replace('<head>', '<head>'+js, 1)
-          p.write_text(s, encoding='utf-8')
-          PY
-
-      - name: Package web build into Android assets
+      - name: Restore game HTML
         run: |
           rm -rf app/src/main/assets
           mkdir -p app/src/main/assets
-          cp -R /tmp/IflationRPG/dist/. app/src/main/assets/
+          cat game/chunk_* | base64 -d > app/src/main/assets/index.html
+          test -s app/src/main/assets/index.html
+          grep -q "포켓몬 서바이버" app/src/main/assets/index.html
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -68,9 +34,17 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --stacktrace
 
+      - name: Verify APK
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          test -s "$APK"
+          unzip -t "$APK"
+          $ANDROID_HOME/build-tools/35.0.0/apksigner verify --verbose --print-certs "$APK"
+          $ANDROID_HOME/build-tools/35.0.0/aapt dump badging "$APK" | head -n 20
+
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: IflationRPG-Korean-Portrait
+          name: Pokemon-Survivor-v0.6
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
