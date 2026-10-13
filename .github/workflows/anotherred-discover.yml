@@ -10,36 +10,20 @@ jobs:
   discover:
     runs-on: ubuntu-latest
     steps:
-      - name: Discover official download URLs
+      - name: Fetch official site assets
         shell: bash
         run: |
           set -euxo pipefail
           mkdir -p /tmp/ar
           cd /tmp/ar
           curl -L --fail --retry 3 -A 'Mozilla/5.0' https://pokemon.jhcloud.kr/ -o index.html
-          echo '=== INDEX HEAD ==='
-          head -n 120 index.html || true
-          echo '=== URLS IN INDEX ==='
-          grep -Eo 'https?://[^"'"'<> ]+' index.html | sort -u || true
-          echo '=== SCRIPT SOURCES ==='
-          grep -Eo '<script[^>]+src=["'"'][^"'"']+' index.html | sed -E 's/.*src=["'"']//' | tee scripts.txt || true
-          while IFS= read -r s; do
-            [ -z "$s" ] && continue
-            case "$s" in
-              http*) u="$s" ;;
-              /*) u="https://pokemon.jhcloud.kr$s" ;;
-              *) u="https://pokemon.jhcloud.kr/$s" ;;
-            esac
-            f="$(basename "${s%%\?*}")"
-            echo "FETCH $u -> $f"
-            curl -L --fail --retry 2 -A 'Mozilla/5.0' "$u" -o "$f" || continue
-            echo "=== URLs from $f ==="
-            grep -Eo 'https?://[^"'"'<> ]+' "$f" | sort -u || true
-            echo "=== download-like strings from $f ==="
-            grep -Eio '.{0,120}(download|\.7z|\.zip|\.rar|drive\.google|api/|fetch\().{0,180}' "$f" | head -n 120 || true
-          done < scripts.txt
-          echo '=== ALL DOWNLOAD-LIKE INDEX STRINGS ==='
-          grep -Eio '.{0,120}(download|\.7z|\.zip|\.rar|drive\.google|api/|fetch\().{0,180}' index.html | head -n 200 || true
+          curl -L --fail --retry 3 -A 'Mozilla/5.0' https://pokemon.jhcloud.kr/app.js -o app.js
+          echo '=== APP.JS HEAD ==='
+          sed -n '1,260p' app.js
+          echo '=== APP.JS DOWNLOAD-LIKE LINES ==='
+          grep -Ein 'download|7z|zip|rar|drive|fetch|api|href|location' app.js || true
+          echo '=== INDEX ==='
+          sed -n '1,180p' index.html
 
       - name: Upload discovery files
         uses: actions/upload-artifact@v4
