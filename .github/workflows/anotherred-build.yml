@@ -7,33 +7,407 @@ on:
       - '.github/workflows/anotherred-build.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+  actions: read
+
 jobs:
-  inspect-game:
-    runs-on: ubuntu-24.04
+  build:
+    runs-on: ubuntu-22.04
+    env:
+      ANDROID_NDK_VERSION: 23.2.8568313
+      GAME_URL: https://files.mybox.naver.com/file/download.api?resourceKey=c2FfODAwMXwzNDcyNTk3NjM5Njc3MzgwOTYwfEZ8MA&NDriveSvcType=NHN%2FND-WEB+Ver
     steps:
-      - name: Download official game and inspect
-        shell: bash
+      - name: Install host tools
         run: |
           set -euxo pipefail
           sudo apt-get update -y
-          sudo apt-get install -y p7zip-full file
+          sudo apt-get install -y p7zip-full ffmpeg zip unzip ruby-full build-essential cmake curl gpg xxd autoconf automake libtool pkg-config python3 git
+
+      - name: Download and prepare Another Red
+        shell: bash
+        run: |
+          set -euxo pipefail
           mkdir -p /tmp/ar
           cd /tmp/ar
-          URL='https://files.mybox.naver.com/file/download.api?resourceKey=c2FfODAwMXwzNDcyNTk3NjM5Njc3MzgwOTYwfEZ8MA&NDriveSvcType=NHN%2FND-WEB+Ver'
-          curl -L --fail --retry 5 --retry-delay 2 -A 'Mozilla/5.0' "$URL" -o game_download
-          echo '=== FILE ==='
-          file game_download
-          ls -lh game_download
-          echo '=== 7Z LIST HEAD ==='
-          7z l game_download | head -n 180 || true
-          echo '=== ARCHIVE PATH HINTS ==='
-          7z l -ba game_download | grep -Ei 'Game\.ini|Scripts\.rxdata|PluginScripts\.rxdata|^.*Audio/|^.*BGM/|mkxp\.json' | head -n 120 || true
+          curl -L --fail --retry 5 --retry-delay 2 -A 'Mozilla/5.0' "$GAME_URL" -o game.zip.download
+          7z x -y game.zip.download -ogame_extract >/dev/null
+          GAME_DIR=$(find game_extract -mindepth 1 -maxdepth 1 -type d | head -1)
+          test -f "$GAME_DIR/Game.ini"
+          test -f "$GAME_DIR/Data/Scripts.rxdata"
+          test -f "$GAME_DIR/Data/PluginScripts.rxdata"
+          echo "GAME_DIR=$GAME_DIR" >> "$GITHUB_ENV"
+          rm -f "$GAME_DIR/Game.exe" "$GAME_DIR"/*.dll "$GAME_DIR"/desktop.ini || true
+          find "$GAME_DIR" -type f \( -iname 'desktop.ini' -o -iname '*.pdn' \) -delete || true
+          echo 'Re-encoding BGM to mobile-friendly Vorbis 96 kbps...'
+          find "$GAME_DIR/Audio/BGM" -type f -iname '*.ogg' -print0 | while IFS= read -r -d '' f; do
+            tmp="${f}.mobile.ogg"
+            ffmpeg -nostdin -hide_banner -loglevel error -y -i "$f" -vn -c:a libvorbis -b:a 96k "$tmp"
+            mv -f "$tmp" "$f"
+          done
+          du -sh "$GAME_DIR"
 
-      - name: Upload archive header info marker
-        run: echo inspect-ok > /tmp/ar/inspect-ok.txt
+      - name: Patch battle speed and EXP
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cat > /tmp/patch_game.rb <<'RUBY'
+          require 'zlib'
 
-      - name: Upload marker
+          game = ARGV[0]
+          scripts_path = File.join(game, 'Data', 'Scripts.rxdata')
+          plugins_path = File.join(game, 'Data', 'PluginScripts.rxdata')
+
+          scripts = Marshal.load(File.binread(scripts_path))
+          row = scripts.find { |r| r.is_a?(Array) && r[1] == 'Battle_ExpAndMoveLearning' }
+          raise 'Battle_ExpAndMoveLearning script not found' unless row
+          src = Zlib::Inflate.inflate(row[2])
+          unless src.include?('Another Red Android: final EXP x2')
+            target = '    expFinal = growth_rate.add_exp(pkmn.exp, exp)'
+            raise 'EXP final calculation not found' unless src.include?(target)
+            src = src.sub(target, "    # Another Red Android: final EXP x2\n    exp *= 2\n" + target)
+          end
+          row[2] = Zlib::Deflate.deflate(src, Zlib::BEST_COMPRESSION)
+          File.binwrite(scripts_path, Marshal.dump(scripts))
+
+          plugins = Marshal.load(File.binread(plugins_path))
+          plug = plugins.find { |p| p.is_a?(Array) && p[1].is_a?(Hash) && p[1][:name] == 'Delta Speed Up' }
+          raise 'Delta Speed Up plugin not found' unless plug
+          entry = plug[2].find { |x| x.is_a?(Array) && x[0] == '_Main_Script.rb' }
+          raise 'Delta Speed Up main script not found' unless entry
+          txt = Zlib::Inflate.inflate(entry[1])
+          txt.sub!(/SPEEDUP_STAGES\s*=\s*\[[^\]]+\]/, 'SPEEDUP_STAGES = [1.3, 2.5]')
+          txt.sub!('$CanToggle = $PokemonSystem.only_speedup_battles == 1', '$CanToggle = false')
+          txt.sub!('@battle_speed = 0           # 기본 배틀 속도 설정', '@battle_speed = 1           # Android: fixed 2.5x battle speed')
+          txt.sub!(/def pbCommandPhase\n\s*\$CanToggle = true\n\s*original_pbCommandPhase\n\s*\$CanToggle = false\n\s*end/, "def pbCommandPhase\n    $CanToggle = false\n    original_pbCommandPhase\n    $CanToggle = false\n  end")
+          entry[1] = Zlib::Deflate.deflate(txt, Zlib::BEST_COMPRESSION)
+          File.binwrite(plugins_path, Marshal.dump(plugins))
+
+          # Verify exact edits.
+          scripts2 = Marshal.load(File.binread(scripts_path))
+          src2 = Zlib::Inflate.inflate(scripts2.find { |r| r.is_a?(Array) && r[1] == 'Battle_ExpAndMoveLearning' }[2])
+          raise 'EXP x2 verification failed' unless src2.include?('exp *= 2')
+          plugins2 = Marshal.load(File.binread(plugins_path))
+          plug2 = plugins2.find { |p| p.is_a?(Array) && p[1].is_a?(Hash) && p[1][:name] == 'Delta Speed Up' }
+          txt2 = Zlib::Inflate.inflate(plug2[2].find { |x| x[0] == '_Main_Script.rb' }[1])
+          raise '2.5x speed verification failed' unless txt2.include?('SPEEDUP_STAGES = [1.3, 2.5]') && txt2.include?('@battle_speed = 1')
+          puts 'GAME_PATCH_VERIFIED'
+          RUBY
+          ruby /tmp/patch_game.rb "$GAME_DIR"
+
+      - name: Pack embedded game data
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd "$GAME_DIR"
+          zip -q -9 -r /tmp/anotherred-game.zip .
+          ls -lh /tmp/anotherred-game.zip
+          BYTES=$(stat -c%s /tmp/anotherred-game.zip)
+          echo "Embedded game zip bytes: $BYTES"
+          if [ "$BYTES" -gt 480000000 ]; then
+            echo 'Game asset is too large for the target Library limit.' >&2
+            exit 1
+          fi
+
+      - name: Clone mkxp-z Android source
+        run: |
+          set -euxo pipefail
+          cd /tmp
+          git clone --depth 1 --recurse-submodules https://github.com/BookerRues9/mkxp-z-android-reworked.git mkxp
+          mkdir -p /tmp/mkxp/app/src/main/assets
+          cp /tmp/anotherred-game.zip /tmp/mkxp/app/src/main/assets/game.zip
+
+      - name: Customize standalone app
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cd /tmp/mkxp
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p=Path('app/build.gradle')
+          s=p.read_text()
+          s=s.replace('applicationId "com.hatkid.mkxpz"','applicationId "com.anred.mobile"')
+          s=s.replace('targetSdk 33','targetSdk 29')
+          s=s.replace('versionCode 11','versionCode 100')
+          s=s.replace('versionName "0.1.1"','versionName "1.0.0-anotherred"')
+          s=s.replace("include 'arm64-v8a', 'armeabi-v7a'", "include 'arm64-v8a'")
+          if "noCompress 'zip'" not in s:
+              s=s.replace('android {', "android {\n    aaptOptions {\n        noCompress 'zip'\n    }", 1)
+          p.write_text(s)
+
+          p=Path('app/src/main/java/com/hatkid/mkxpz/MainActivity.java')
+          s=p.read_text()
+          needle='        super.onCreate(savedInstanceState);'
+          repl=needle+'\n\n        // Standalone Another Red: run only from app-private extracted data.\n        GAME_PATH = new File(getFilesDir(), "game").getAbsolutePath();'
+          if repl not in s:
+              s=s.replace(needle,repl,1)
+          s=re.sub(r'\n\s*// Check for all files access permission \(Android 11\+\).*?\n\s*// Setup in-screen gamepad', '\n\n        // Standalone build does not require broad storage access.\n        // Setup in-screen gamepad', s, flags=re.S)
+          p.write_text(s)
+          PY
+
+          cat > app/src/main/java/com/hatkid/mkxpz/LauncherActivity.java <<'JAVA'
+          package com.hatkid.mkxpz;
+
+          import android.app.Activity;
+          import android.content.Intent;
+          import android.os.Bundle;
+          import android.view.Gravity;
+          import android.view.WindowManager;
+          import android.widget.TextView;
+          import java.io.BufferedInputStream;
+          import java.io.BufferedOutputStream;
+          import java.io.File;
+          import java.io.FileOutputStream;
+          import java.io.InputStream;
+          import java.util.zip.ZipEntry;
+          import java.util.zip.ZipInputStream;
+
+          public class LauncherActivity extends Activity {
+              private TextView status;
+              private File gameDir;
+              private File readyMarker;
+
+              @Override
+              protected void onCreate(Bundle state) {
+                  super.onCreate(state);
+                  getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+                  status = new TextView(this);
+                  status.setGravity(Gravity.CENTER);
+                  status.setTextSize(20f);
+                  status.setText("Pokemon Another Red\n게임 데이터를 확인하는 중...");
+                  setContentView(status);
+                  gameDir = new File(getFilesDir(), "game");
+                  readyMarker = new File(gameDir, ".anotherred_ready_v1");
+                  File scripts = new File(gameDir, "Data/Scripts.rxdata");
+                  if (readyMarker.isFile() && scripts.isFile()) {
+                      startGame();
+                      return;
+                  }
+                  new Thread(() -> installGame()).start();
+              }
+
+              private void installGame() {
+                  try {
+                      runOnUiThread(() -> status.setText("Pokemon Another Red\n첫 실행 준비 중입니다.\n잠시 기다려 주세요..."));
+                      deleteRecursive(gameDir);
+                      if (!gameDir.mkdirs() && !gameDir.isDirectory()) throw new Exception("게임 폴더 생성 실패");
+                      String root = gameDir.getCanonicalPath() + File.separator;
+                      try (InputStream raw = getAssets().open("game.zip");
+                           ZipInputStream zin = new ZipInputStream(new BufferedInputStream(raw, 131072))) {
+                          ZipEntry e;
+                          byte[] buf = new byte[131072];
+                          int count = 0;
+                          while ((e = zin.getNextEntry()) != null) {
+                              File out = new File(gameDir, e.getName());
+                              String outPath = out.getCanonicalPath();
+                              if (!outPath.startsWith(root)) throw new SecurityException("잘못된 압축 경로");
+                              if (e.isDirectory()) {
+                                  if (!out.mkdirs() && !out.isDirectory()) throw new Exception("폴더 생성 실패: " + e.getName());
+                              } else {
+                                  File parent = out.getParentFile();
+                                  if (parent != null && !parent.mkdirs() && !parent.isDirectory()) throw new Exception("폴더 생성 실패");
+                                  try (BufferedOutputStream bos = new BufferedOutputStream(new FileOutputStream(out), 131072)) {
+                                      int n;
+                                      while ((n = zin.read(buf)) > 0) bos.write(buf, 0, n);
+                                  }
+                              }
+                              zin.closeEntry();
+                              count++;
+                              if ((count % 250) == 0) {
+                                  final int c = count;
+                                  runOnUiThread(() -> status.setText("Pokemon Another Red\n게임 데이터 준비 중...\n" + c + "개 파일 처리"));
+                              }
+                          }
+                      }
+                      File scripts = new File(gameDir, "Data/Scripts.rxdata");
+                      File plugins = new File(gameDir, "Data/PluginScripts.rxdata");
+                      File ini = new File(gameDir, "Game.ini");
+                      if (!scripts.isFile() || !plugins.isFile() || !ini.isFile()) throw new Exception("필수 게임 파일 확인 실패");
+                      try (FileOutputStream marker = new FileOutputStream(readyMarker)) { marker.write(1); }
+                      runOnUiThread(this::startGame);
+                  } catch (Throwable t) {
+                      t.printStackTrace();
+                      final String msg = t.getClass().getSimpleName() + ": " + String.valueOf(t.getMessage());
+                      runOnUiThread(() -> status.setText("게임 데이터 준비 중 오류가 발생했습니다.\n\n" + msg));
+                  }
+              }
+
+              private void startGame() {
+                  status.setText("Pokemon Another Red\n실행 중...");
+                  startActivity(new Intent(this, MainActivity.class));
+                  finish();
+              }
+
+              private static void deleteRecursive(File f) {
+                  if (f == null || !f.exists()) return;
+                  if (f.isDirectory()) {
+                      File[] children = f.listFiles();
+                      if (children != null) for (File c : children) deleteRecursive(c);
+                  }
+                  if (!f.delete() && f.exists()) throw new RuntimeException("기존 데이터 삭제 실패: " + f.getAbsolutePath());
+              }
+          }
+          JAVA
+
+          cat > app/src/main/AndroidManifest.xml <<'XML'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" android:installLocation="auto">
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+              <uses-permission android:name="android.permission.VIBRATE" />
+              <uses-feature android:name="android.software.leanback" android:required="false" />
+              <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+              <uses-feature android:name="android.hardware.usb.host" android:required="false" />
+              <uses-feature android:name="android.hardware.gamepad" android:required="false" />
+              <uses-feature android:name="android.hardware.bluetooth" android:required="false" />
+              <uses-feature android:name="android.hardware.type.pc" android:required="false" />
+              <uses-feature android:glEsVersion="0x00020000" android:required="true" />
+              <supports-screens android:largeScreens="true" android:normalScreens="true" android:smallScreens="true" android:xlargeScreens="true" android:resizeable="true" android:anyDensity="true" />
+              <application
+                  android:label="Pokemon Another Red"
+                  android:icon="@mipmap/ic_launcher"
+                  android:banner="@mipmap/ic_banner"
+                  android:theme="@style/AppTheme"
+                  android:appCategory="game"
+                  android:isGame="true"
+                  android:hardwareAccelerated="true"
+                  android:largeHeap="true"
+                  android:extractNativeLibs="true"
+                  android:allowBackup="true">
+                  <activity
+                      android:name=".LauncherActivity"
+                      android:label="Pokemon Another Red"
+                      android:screenOrientation="sensorLandscape"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                          <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <activity
+                      android:name=".MainActivity"
+                      android:label="Pokemon Another Red"
+                      android:alwaysRetainTaskState="true"
+                      android:launchMode="singleTask"
+                      android:screenOrientation="sensorLandscape"
+                      android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|navigation"
+                      android:resizeableActivity="true"
+                      android:preferMinimalPostProcessing="true"
+                      android:exported="false">
+                      <meta-data android:name="mkxp_debug" android:value="false" />
+                      <meta-data android:name="com.samsung.android.keepalive.density" android:value="true" />
+                      <meta-data android:name="com.samsung.android.multidisplay.keep_process_alive" android:value="true" />
+                  </activity>
+              </application>
+          </manifest>
+          XML
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          set -euxo pipefail
+          sdkmanager --install "ndk;${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          TOOLCHAIN="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
+
+      - name: Build mkxp-z native dependencies
+        working-directory: /tmp/mkxp/app/jni
+        run: |
+          set -euxo pipefail
+          chmod +x get_deps.sh
+          ./get_deps.sh
+          cd mkxp-z
+          chmod +x make_xxd.sh
+          ./make_xxd.sh
+          cd ..
+          HOST=aarch64-linux-android TARGET=aarch64-linux-android ABI=arm64-v8a LDFLAGS='-Wl,-z,max-page-size=16384' make -j$(nproc)
+          if [ -d build-arm64-v8a ] && [ ! -d build-arm64 ]; then ln -s build-arm64-v8a build-arm64; fi
+
+      - name: Build release APK
+        working-directory: /tmp/mkxp
+        run: |
+          set -euxo pipefail
+          chmod +x gradlew
+          export GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx4g'
+          ./gradlew assembleRelease -Pandroid.suppressUnsupportedCompileSdk=34 --no-daemon --stacktrace
+          find app/build/outputs/apk -type f -name '*.apk' -printf '%s %p\n' | sort -n
+          APK=$(find app/build/outputs/apk -type f -name '*.apk' -printf '%s %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
+          test -n "$APK"
+          cp "$APK" /tmp/unsigned.apk
+          ls -lh /tmp/unsigned.apk
+
+      - name: Sign and verify normal APK
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BT=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          keytool -genkeypair -v -keystore /tmp/anotherred.keystore -storepass anotherred123 -keypass anotherred123 -alias anotherred -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Pokemon Another Red,O=Standalone Android,C=KR'
+          "$BT/zipalign" -f 4 /tmp/unsigned.apk /tmp/aligned.apk
+          "$BT/apksigner" sign --ks /tmp/anotherred.keystore --ks-key-alias anotherred --ks-pass pass:anotherred123 --key-pass pass:anotherred123 --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true --out /tmp/AnotherRed-Normal.apk /tmp/aligned.apk
+          "$BT/apksigner" verify --verbose --print-certs /tmp/AnotherRed-Normal.apk
+          "$BT/aapt" dump badging /tmp/AnotherRed-Normal.apk | head -n 8
+          ls -lh /tmp/AnotherRed-Normal.apk
+          sha256sum /tmp/AnotherRed-Normal.apk
+
+      - name: Create v1 repackable APK root
+        shell: bash
+        run: |
+          set -euxo pipefail
+          BT=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$BT/apksigner" sign --ks /tmp/anotherred.keystore --ks-key-alias anotherred --ks-pass pass:anotherred123 --key-pass pass:anotherred123 --v1-signing-enabled true --v2-signing-enabled false --v3-signing-enabled false --v4-signing-enabled false --out /tmp/AnotherRed-V1.apk /tmp/aligned.apk
+          "$BT/apksigner" verify --min-sdk-version 23 --verbose /tmp/AnotherRed-V1.apk
+          rm -rf /tmp/apkroot
+          mkdir -p /tmp/apkroot
+          unzip -q /tmp/AnotherRed-V1.apk -d /tmp/apkroot
+          test -f /tmp/apkroot/AndroidManifest.xml
+          test -f /tmp/apkroot/META-INF/MANIFEST.MF
+          du -sh /tmp/apkroot
+
+      - name: Upload Library-ready APK bytes
+        id: library_artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anotherred-inspect
-          path: /tmp/ar/inspect-ok.txt
+          name: AnotherRed-Library-APK
+          path: /tmp/apkroot/
+          compression-level: 0
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: Verify exact artifact ZIP is installable APK
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ steps.library_artifact.outputs.artifact-id }}
+        run: |
+          set -euxo pipefail
+          BT=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          curl -L --fail --retry 4 -H "Authorization: Bearer $GH_TOKEN" -H 'Accept: application/vnd.github+json' "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}/zip" -o /tmp/AnotherRed-Library.apk
+          echo '=== wrapper root entries ==='
+          unzip -l /tmp/AnotherRed-Library.apk | head -n 30
+          "$BT/apksigner" verify --min-sdk-version 23 --verbose --print-certs /tmp/AnotherRed-Library.apk
+          "$BT/aapt" dump badging /tmp/AnotherRed-Library.apk | head -n 8
+          SIZE=$(stat -c%s /tmp/AnotherRed-Library.apk)
+          echo "FINAL_LIBRARY_APK_BYTES=$SIZE"
+          test "$SIZE" -lt 536870912
+          sha256sum /tmp/AnotherRed-Library.apk
+          echo 'LIBRARY_APK_VERIFIED_OK'
+
+      - name: Upload conventional signed APK backup
+        uses: actions/upload-artifact@v4
+        with:
+          name: AnotherRed-Normal-Signed-Backup
+          path: /tmp/AnotherRed-Normal.apk
+          compression-level: 0
+          retention-days: 30
