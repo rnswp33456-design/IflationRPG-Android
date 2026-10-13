@@ -1,0 +1,39 @@
+name: AnotherRed APK Build
+
+on:
+  push:
+    branches: [ "anotherred-apk-build" ]
+    paths:
+      - '.github/workflows/anotherred-build.yml'
+  workflow_dispatch:
+
+jobs:
+  inspect-game:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download official game and inspect
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y p7zip-full file
+          mkdir -p /tmp/ar
+          cd /tmp/ar
+          URL='https://files.mybox.naver.com/file/download.api?resourceKey=c2FfODAwMXwzNDcyNTk3NjM5Njc3MzgwOTYwfEZ8MA&NDriveSvcType=NHN%2FND-WEB+Ver'
+          curl -L --fail --retry 5 --retry-delay 2 -A 'Mozilla/5.0' "$URL" -o game_download
+          echo '=== FILE ==='
+          file game_download
+          ls -lh game_download
+          echo '=== 7Z LIST HEAD ==='
+          7z l game_download | head -n 180 || true
+          echo '=== ARCHIVE PATH HINTS ==='
+          7z l -ba game_download | grep -Ei 'Game\.ini|Scripts\.rxdata|PluginScripts\.rxdata|^.*Audio/|^.*BGM/|mkxp\.json' | head -n 120 || true
+
+      - name: Upload archive header info marker
+        run: echo inspect-ok > /tmp/ar/inspect-ok.txt
+
+      - name: Upload marker
+        uses: actions/upload-artifact@v4
+        with:
+          name: anotherred-inspect
+          path: /tmp/ar/inspect-ok.txt
