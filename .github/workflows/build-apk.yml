@@ -1,76 +1,74 @@
-name: Build APK
+name: Build Another Red mkxp-z Base
 
 on:
-  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "another-red-build" ]
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
     steps:
-      - name: Checkout Android wrapper
+      - name: Checkout trigger repository
         uses: actions/checkout@v4
 
-      - name: Fetch InflationRPG source
-        run: git clone --depth 1 https://github.com/GoodStudyDay/IflationRPG.git /tmp/IflationRPG
+      - name: Clone mkxp-z Android packager
+        run: git clone --depth 1 https://github.com/vrcxz/mkxp-z-android-packager.git /tmp/mkxp-packager
 
-      - name: Apply Korean localization patch
-        run: python3 scripts/korean_patch.py
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      - name: Build localized web game
-        working-directory: /tmp/IflationRPG
+      - name: Prepare tiny RPG Maker XP dummy game
         run: |
-          npm ci
-          npm run build
+          mkdir -p /tmp/dummy-game/Data
+          cat > /tmp/dummy-game/Game.ini <<'EOF'
+          [Game]
+          Library=RGSS102E.dll
+          Scripts=Data\\Scripts.rxdata
+          Title=Another Red Base
+          RTP1=
+          RTP2=
+          RTP3=
+          EOF
+          ruby -rzlib -e 'code="exit\n"; scripts=[[1,"Main",Zlib::Deflate.deflate(code)]]; File.binwrite("/tmp/dummy-game/Data/Scripts.rxdata", Marshal.dump(scripts))'
+          cat > /tmp/dummy-game/mkxp.json <<'EOF'
+          {
+            "windowTitle": "Pokemon Another Red",
+            "rgssVersion": 1,
+            "defScreenW": 512,
+            "defScreenH": 288,
+            "fullscreen": true,
+            "fixedAspectRatio": true,
+            "vsync": false,
+            "syncToRefreshrate": false
+          }
+          EOF
 
-      - name: Force Korean for existing saves
+      - name: Set up Android build environment and native dependencies
+        working-directory: /tmp/mkxp-packager
         run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p=Path('/tmp/IflationRPG/dist/index.html')
-          s=p.read_text(encoding='utf-8')
-          js="""<script>
-          try {
-            const k='inflation-rpg-savedata';
-            const raw=localStorage.getItem(k);
-            const d=raw ? JSON.parse(raw) : {};
-            d.language='ko';
-            localStorage.setItem(k, JSON.stringify(d));
-          } catch(e) {}
-          </script>"""
-          s=s.replace('<head>', '<head>'+js, 1)
-          p.write_text(s, encoding='utf-8')
-          PY
+          chmod +x tools/setup.sh tools/build.sh tools/package_game.sh
+          ./tools/setup.sh
 
-      - name: Package web build into Android assets
+      - name: Build arm64 standalone base APK
+        working-directory: /tmp/mkxp-packager
+        run: ./tools/build.sh /tmp/dummy-game
+
+      - name: Collect APK and Android signing tools
         run: |
-          rm -rf app/src/main/assets
-          mkdir -p app/src/main/assets
-          cp -R /tmp/IflationRPG/dist/. app/src/main/assets/
+          set -eux
+          mkdir -p /tmp/artifact
+          APK=$(find /tmp/mkxp-packager/app/build/outputs/apk/debug -name '*arm64-v8a-debug.apk' -o -name '*debug.apk' | head -1)
+          test -f "$APK"
+          cp "$APK" /tmp/artifact/another-red-base.apk
+          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          cp "$BUILD_TOOLS/lib/apksigner.jar" /tmp/artifact/apksigner.jar
+          cp "$BUILD_TOOLS/zipalign" /tmp/artifact/zipalign
+          chmod +x /tmp/artifact/zipalign
+          ls -lh /tmp/artifact
 
-      - name: Set up Java
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.7'
-
-      - name: Build debug APK
-        run: gradle :app:assembleDebug --stacktrace
-
-      - name: Upload APK
+      - name: Upload base build bundle
         uses: actions/upload-artifact@v4
         with:
-          name: IflationRPG-Korean-Portrait
-          path: app/build/outputs/apk/debug/app-debug.apk
+          name: another-red-base-bundle
+          path: /tmp/artifact/*
           if-no-files-found: error
+          retention-days: 7
