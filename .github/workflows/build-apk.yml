@@ -9,12 +9,24 @@ jobs:
   build:
     runs-on: ubuntu-22.04
     timeout-minutes: 120
+    env:
+      ANDROID_NDK_VERSION: 23.2.8568313
     steps:
       - name: Checkout trigger repository
         uses: actions/checkout@v4
 
       - name: Clone mkxp-z Android packager
         run: git clone --depth 1 https://github.com/vrcxz/mkxp-z-android-packager.git /tmp/mkxp-packager
+
+      - name: Brand Android app
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('/tmp/mkxp-packager/app/src/main/res/values/strings.xml')
+          s=p.read_text()
+          s=s.replace('<string name="app_name">mkxp-z</string>', '<string name="app_name">Pokemon Another Red</string>')
+          p.write_text(s)
+          PY
 
       - name: Prepare tiny RPG Maker XP dummy game
         run: |
@@ -23,7 +35,7 @@ jobs:
           [Game]
           Library=RGSS102E.dll
           Scripts=Data\\Scripts.rxdata
-          Title=Another Red Base
+          Title=Pokemon Another Red
           RTP1=
           RTP2=
           RTP3=
@@ -42,15 +54,58 @@ jobs:
           }
           EOF
 
-      - name: Set up Android build environment and native dependencies
-        working-directory: /tmp/mkxp-packager
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Install system dependencies
         run: |
-          chmod +x tools/setup.sh tools/build.sh tools/package_game.sh
-          ./tools/setup.sh
+          sudo apt-get update -y
+          sudo apt-get install -y \
+            build-essential cmake curl gpg xxd ruby-full \
+            autoconf automake libtool pkg-config python3 git unzip \
+            rsync gawk wget dosfstools mtools
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-33" \
+            "build-tools;33.0.2" \
+            "cmake;3.22.1" \
+            "ndk;${ANDROID_NDK_VERSION}"
+          NDK_PATH="$ANDROID_HOME/ndk/${ANDROID_NDK_VERSION}"
+          echo "ANDROID_NDK_HOME=$NDK_PATH" >> "$GITHUB_ENV"
+          echo "ARCH=linux-x86_64" >> "$GITHUB_ENV"
+          echo "$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin" >> "$GITHUB_PATH"
+          cat > /tmp/mkxp-packager/tools/env.sh <<EOF
+          export ANDROID_HOME=$ANDROID_HOME
+          export ANDROID_SDK_ROOT=$ANDROID_HOME
+          export ANDROID_NDK_HOME=$NDK_PATH
+          export JAVA_HOME=$JAVA_HOME
+          export PATH=\$JAVA_HOME/bin:\$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:\$ANDROID_HOME/platform-tools:\$PATH
+          export ARCH=linux-x86_64
+          EOF
+
+      - name: Download native dependency sources
+        working-directory: /tmp/mkxp-packager/app/jni
+        run: |
+          chmod +x get_deps.sh
+          ./get_deps.sh
+          cd mkxp-z
+          chmod +x make_xxd.sh
+          ./make_xxd.sh
 
       - name: Build arm64 standalone base APK
         working-directory: /tmp/mkxp-packager
-        run: ./tools/build.sh /tmp/dummy-game
+        run: |
+          chmod +x tools/build.sh tools/package_game.sh gradlew
+          ./tools/build.sh /tmp/dummy-game
 
       - name: Collect APK and Android signing tools
         run: |
@@ -59,7 +114,7 @@ jobs:
           APK=$(find /tmp/mkxp-packager/app/build/outputs/apk/debug -name '*arm64-v8a-debug.apk' -o -name '*debug.apk' | head -1)
           test -f "$APK"
           cp "$APK" /tmp/artifact/another-red-base.apk
-          BUILD_TOOLS=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          BUILD_TOOLS="$ANDROID_HOME/build-tools/33.0.2"
           cp "$BUILD_TOOLS/lib/apksigner.jar" /tmp/artifact/apksigner.jar
           cp "$BUILD_TOOLS/zipalign" /tmp/artifact/zipalign
           chmod +x /tmp/artifact/zipalign
