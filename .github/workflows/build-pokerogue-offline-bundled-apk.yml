@@ -147,34 +147,78 @@ jobs:
           disable-animations: true
           emulator-boot-timeout: 900
           disk-size: 8192M
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none -partition-size 8192
           script: |
-            set -euxo pipefail
+            set -uox pipefail
             APK="$GITHUB_WORKSPACE/PokeRogue-Offline-OneFile-FINAL-TESTED.apk"
             AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
-            adb install -r -t "$APK" | tee "$GITHUB_WORKSPACE/adb-install.txt"
-            grep -q 'Success' "$GITHUB_WORKSPACE/adb-install.txt"
             PKG=$($AAPT dump badging "$APK" | sed -n "s/package: name='\([^']*\)'.*/\1/p")
-            ACT=$($AAPT dump badging "$APK" | sed -n "s/launchable-activity: name='\([^']*\)'.*/\1/p")
+            AAPT_ACT=$($AAPT dump badging "$APK" | sed -n "s/launchable-activity: name='\([^']*\)'.*/\1/p")
             test -n "$PKG"
-            test -n "$ACT"
             echo "PACKAGE=$PKG" | tee "$GITHUB_WORKSPACE/runtime.txt"
-            echo "ACTIVITY=$ACT" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
-            adb shell am force-stop "$PKG"
-            adb shell am start -W -n "$PKG/$ACT" | tee "$GITHUB_WORKSPACE/adb-launch.txt"
-            sleep 20
-            adb shell pidof "$PKG" | tee "$GITHUB_WORKSPACE/app-pid.txt"
-            test -s "$GITHUB_WORKSPACE/app-pid.txt"
-            adb shell dumpsys activity activities | grep -m1 "$PKG" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+            echo "AAPT_ACTIVITY=$AAPT_ACT" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+
+            collect_diagnostics() {
+              set +e
+              adb shell df -h /data > "$GITHUB_WORKSPACE/data-df.txt" 2>&1
+              adb shell pm list packages | grep -F 'chatgpt.pokerogue' > "$GITHUB_WORKSPACE/installed-packages.txt" 2>&1
+              adb shell pm path "$PKG" >> "$GITHUB_WORKSPACE/runtime.txt" 2>&1
+              adb shell dumpsys activity activities | grep -F "$PKG" | head -n 40 >> "$GITHUB_WORKSPACE/runtime.txt" 2>&1
+              adb logcat -d > "$GITHUB_WORKSPACE/logcat.txt" 2>&1
+              adb exec-out screencap -p > "$GITHUB_WORKSPACE/emulator-screen.png" 2>/dev/null
+              set -e
+            }
+            trap collect_diagnostics EXIT
+
+            adb wait-for-device
+            adb shell getprop sys.boot_completed | tee "$GITHUB_WORKSPACE/boot-completed.txt"
+            adb shell df -h /data | tee "$GITHUB_WORKSPACE/data-df-before.txt"
+            adb shell pm uninstall "$PKG" || true
+
+            set +e
+            adb install --no-streaming -t "$APK" 2>&1 | tee "$GITHUB_WORKSPACE/adb-install.txt"
+            INSTALL_RC=${PIPESTATUS[0]}
+            set -e
+            echo "INSTALL_RC=$INSTALL_RC" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+            test "$INSTALL_RC" -eq 0
+            grep -q 'Success' "$GITHUB_WORKSPACE/adb-install.txt"
+            adb shell pm path "$PKG" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+
+            COMPONENT=$(adb shell cmd package resolve-activity --brief "$PKG" 2>/dev/null | tr -d '\r' | tail -n1)
+            if [ -z "$COMPONENT" ] || [ "$COMPONENT" = "No activity found" ]; then
+              test -n "$AAPT_ACT"
+              COMPONENT="$PKG/$AAPT_ACT"
+            fi
+            echo "RESOLVED_COMPONENT=$COMPONENT" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+
+            adb shell am force-stop "$PKG" || true
+            adb shell am start -W -n "$COMPONENT" 2>&1 | tee "$GITHUB_WORKSPACE/adb-launch.txt"
+
+            PID=""
+            for i in $(seq 1 20); do
+              PID=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
+              if [ -n "$PID" ]; then
+                break
+              fi
+              sleep 2
+            done
+            echo "$PID" | tee "$GITHUB_WORKSPACE/app-pid.txt"
+            test -n "$PID"
+            sleep 10
+            PID2=$(adb shell pidof "$PKG" 2>/dev/null | tr -d '\r' || true)
+            echo "PID_AFTER_10S=$PID2" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+            test -n "$PID2"
+            adb shell dumpsys activity activities | grep -F "$PKG" | head -n 20 | tee -a "$GITHUB_WORKSPACE/runtime.txt"
             adb exec-out screencap -p > "$GITHUB_WORKSPACE/emulator-screen.png"
             adb logcat -d > "$GITHUB_WORKSPACE/logcat.txt"
-            if grep -A8 -B2 'FATAL EXCEPTION' "$GITHUB_WORKSPACE/logcat.txt" | grep -q "$PKG"; then
+            if grep -A12 -B3 'FATAL EXCEPTION' "$GITHUB_WORKSPACE/logcat.txt" | grep -Fq "$PKG"; then
               echo 'App fatal exception detected' >&2
               exit 1
             fi
             echo 'ANDROID_INSTALL_AND_LAUNCH_OK' | tee -a "$GITHUB_WORKSPACE/runtime.txt"
 
-      - name: Upload tested single APK and proof
+      - name: Upload APK and smoke-test diagnostics
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: PokeRogue-Offline-OneFile-FINAL-TESTED
@@ -188,5 +232,11 @@ jobs:
             adb-install.txt
             adb-launch.txt
             runtime.txt
+            app-pid.txt
+            boot-completed.txt
+            data-df-before.txt
+            data-df.txt
+            installed-packages.txt
+            logcat.txt
             emulator-screen.png
-          if-no-files-found: error
+          if-no-files-found: warn
