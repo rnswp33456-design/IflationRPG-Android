@@ -121,23 +121,18 @@ jobs:
           s=s.replace('versionCode 11','versionCode 100')
           s=s.replace('versionName "0.1.1"','versionName "1.0.0-anotherred"')
           s=s.replace("include 'arm64-v8a', 'armeabi-v7a'", "include 'arm64-v8a'")
-          if "noCompress 'zip'" not in s:
-              s=s.replace('android {', "android {\n    aaptOptions {\n        noCompress 'zip'\n    }", 1)
+          if "noCompress 'zip'" not in s: s=s.replace('android {', "android {\n    aaptOptions {\n        noCompress 'zip'\n    }", 1)
           p.write_text(s)
           p=Path('app/src/main/java/com/hatkid/mkxpz/MainActivity.java')
-          s=p.read_text()
-          needle='        super.onCreate(savedInstanceState);'
-          repl=needle+'\n\n        GAME_PATH = new File(getFilesDir(), "game").getAbsolutePath();'
+          s=p.read_text(); needle='        super.onCreate(savedInstanceState);'; repl=needle+'\n\n        GAME_PATH = new File(getFilesDir(), "game").getAbsolutePath();'
           if repl not in s: s=s.replace(needle,repl,1)
           s=re.sub(r'\n\s*// Check for all files access permission \(Android 11\+\).*?\n\s*// Setup in-screen gamepad', '\n\n        // Setup in-screen gamepad', s, flags=re.S)
           p.write_text(s)
           PY
           cat > app/src/main/java/com/hatkid/mkxpz/LauncherActivity.java <<'JAVA'
           package com.hatkid.mkxpz;
-          import android.app.Activity; import android.content.Intent; import android.os.Bundle; import android.view.Gravity; import android.view.WindowManager; import android.widget.TextView;
-          import java.io.*; import java.util.zip.*;
-          public class LauncherActivity extends Activity {
-            private TextView status; private File gameDir; private File readyMarker;
+          import android.app.Activity; import android.content.Intent; import android.os.Bundle; import android.view.Gravity; import android.view.WindowManager; import android.widget.TextView; import java.io.*; import java.util.zip.*;
+          public class LauncherActivity extends Activity { private TextView status; private File gameDir; private File readyMarker;
             @Override protected void onCreate(Bundle state){ super.onCreate(state); getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON); status=new TextView(this); status.setGravity(Gravity.CENTER); status.setTextSize(20f); status.setText("Pokemon Another Red\n게임 데이터를 확인하는 중..."); setContentView(status); gameDir=new File(getFilesDir(),"game"); readyMarker=new File(gameDir,".anotherred_ready_v1"); File scripts=new File(gameDir,"Data/Scripts.rxdata"); if(readyMarker.isFile()&&scripts.isFile()){startGame();return;} new Thread(this::installGame).start(); }
             private void installGame(){ try{ runOnUiThread(()->status.setText("Pokemon Another Red\n첫 실행 준비 중입니다.\n잠시 기다려 주세요...")); deleteRecursive(gameDir); if(!gameDir.mkdirs()&&!gameDir.isDirectory())throw new Exception("게임 폴더 생성 실패"); String root=gameDir.getCanonicalPath()+File.separator; try(InputStream raw=getAssets().open("game.zip"); ZipInputStream zin=new ZipInputStream(new BufferedInputStream(raw,131072))){ ZipEntry e; byte[] buf=new byte[131072]; int count=0; while((e=zin.getNextEntry())!=null){ File out=new File(gameDir,e.getName()); String outPath=out.getCanonicalPath(); if(!outPath.startsWith(root))throw new SecurityException("잘못된 압축 경로"); if(e.isDirectory()){ if(!out.mkdirs()&&!out.isDirectory())throw new Exception("폴더 생성 실패"); } else { File parent=out.getParentFile(); if(parent!=null&&!parent.mkdirs()&&!parent.isDirectory())throw new Exception("폴더 생성 실패"); try(BufferedOutputStream bos=new BufferedOutputStream(new FileOutputStream(out),131072)){ int n; while((n=zin.read(buf))>0)bos.write(buf,0,n); }} zin.closeEntry(); count++; if((count%250)==0){ final int c=count; runOnUiThread(()->status.setText("Pokemon Another Red\n게임 데이터 준비 중...\n"+c+"개 파일 처리")); } }} File scripts=new File(gameDir,"Data/Scripts.rxdata"), plugins=new File(gameDir,"Data/PluginScripts.rxdata"), ini=new File(gameDir,"Game.ini"); if(!scripts.isFile()||!plugins.isFile()||!ini.isFile())throw new Exception("필수 게임 파일 확인 실패"); try(FileOutputStream marker=new FileOutputStream(readyMarker)){marker.write(1);} runOnUiThread(this::startGame); }catch(Throwable t){t.printStackTrace(); final String msg=t.getClass().getSimpleName()+": "+String.valueOf(t.getMessage()); runOnUiThread(()->status.setText("게임 데이터 준비 중 오류가 발생했습니다.\n\n"+msg)); }}
             private void startGame(){ startActivity(new Intent(this,MainActivity.class)); finish(); }
@@ -146,25 +141,14 @@ jobs:
           JAVA
           cat > app/src/main/AndroidManifest.xml <<'XML'
           <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android" android:installLocation="auto">
-            <uses-permission android:name="android.permission.INTERNET"/><uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/><uses-permission android:name="android.permission.VIBRATE"/>
-            <uses-feature android:name="android.hardware.touchscreen" android:required="false"/><uses-feature android:name="android.hardware.gamepad" android:required="false"/><uses-feature android:glEsVersion="0x00020000" android:required="true"/>
-            <application android:label="Pokemon Another Red" android:icon="@mipmap/ic_launcher" android:theme="@style/AppTheme" android:appCategory="game" android:isGame="true" android:hardwareAccelerated="true" android:largeHeap="true" android:extractNativeLibs="true" android:allowBackup="true">
-              <activity android:name=".LauncherActivity" android:label="Pokemon Another Red" android:screenOrientation="sensorLandscape" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity>
-              <activity android:name=".MainActivity" android:label="Pokemon Another Red" android:alwaysRetainTaskState="true" android:launchMode="singleTask" android:screenOrientation="sensorLandscape" android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|navigation" android:resizeableActivity="true" android:exported="false"><meta-data android:name="mkxp_debug" android:value="false"/></activity>
-            </application>
-          </manifest>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android" android:installLocation="auto"><uses-permission android:name="android.permission.INTERNET"/><uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/><uses-permission android:name="android.permission.VIBRATE"/><uses-feature android:name="android.hardware.touchscreen" android:required="false"/><uses-feature android:name="android.hardware.gamepad" android:required="false"/><uses-feature android:glEsVersion="0x00020000" android:required="true"/><application android:label="Pokemon Another Red" android:icon="@mipmap/ic_launcher" android:theme="@style/AppTheme" android:appCategory="game" android:isGame="true" android:hardwareAccelerated="true" android:largeHeap="true" android:extractNativeLibs="true" android:allowBackup="true"><activity android:name=".LauncherActivity" android:label="Pokemon Another Red" android:screenOrientation="sensorLandscape" android:exported="true"><intent-filter><action android:name="android.intent.action.MAIN"/><category android:name="android.intent.category.LAUNCHER"/></intent-filter></activity><activity android:name=".MainActivity" android:label="Pokemon Another Red" android:alwaysRetainTaskState="true" android:launchMode="singleTask" android:screenOrientation="sensorLandscape" android:configChanges="layoutDirection|locale|orientation|uiMode|screenLayout|screenSize|smallestScreenSize|density|keyboard|keyboardHidden|navigation" android:resizeableActivity="true" android:exported="false"><meta-data android:name="mkxp_debug" android:value="false"/></activity></application></manifest>
           XML
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: temurin
-
+        with: { java-version: '17', distribution: temurin }
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
-
       - name: Install Android SDK packages
         shell: bash
         run: |
@@ -173,52 +157,26 @@ jobs:
           sdkmanager "platform-tools" "platforms;android-33" "build-tools;33.0.2" "ndk;${ANDROID_NDK_VERSION}"
           echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
           echo "ANDROID_NDK_ROOT=$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-          TOOLCHAIN="$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          test -d "$TOOLCHAIN"
-          echo "$TOOLCHAIN" >> "$GITHUB_PATH"
-
+          TOOLCHAIN="$ANDROID_SDK_ROOT/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64/bin"; test -d "$TOOLCHAIN"; echo "$TOOLCHAIN" >> "$GITHUB_PATH"
       - name: Build mkxp-z native dependencies
         working-directory: /tmp/mkxp/app/jni
         run: |
           set -euxo pipefail
-          chmod +x get_deps.sh
-          ./get_deps.sh
-          cd mkxp-z
-          chmod +x make_xxd.sh
-          ./make_xxd.sh
-          cd ..
+          chmod +x get_deps.sh; ./get_deps.sh
+          cd mkxp-z; chmod +x make_xxd.sh; ./make_xxd.sh; cd ..
           HOST=aarch64-linux-android TARGET=aarch64-linux-android ABI=arm64-v8a LDFLAGS='-Wl,-z,max-page-size=16384' make -j$(nproc)
           if [ -d build-arm64-v8a ] && [ ! -d build-arm64 ]; then ln -s build-arm64-v8a build-arm64; fi
-
       - name: Build signed debug APK
         working-directory: /tmp/mkxp
         run: |
           set -euxo pipefail
-          chmod +x gradlew
-          export GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx4g'
-          ./gradlew assembleDebug --no-daemon --stacktrace
-          APK=$(find app/build/outputs/apk -type f -name '*debug*.apk' -printf '%s %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
-          test -n "$APK"
-          cp "$APK" /tmp/AnotherRed-FINAL.apk
-          ls -lh /tmp/AnotherRed-FINAL.apk
-
+          chmod +x gradlew; export GRADLE_OPTS='-Dorg.gradle.jvmargs=-Xmx4g'; ./gradlew assembleDebug --no-daemon --stacktrace
+          APK=$(find app/build/outputs/apk -type f -name '*debug*.apk' -printf '%s %p\n' | sort -nr | head -1 | cut -d' ' -f2-); test -n "$APK"; cp "$APK" /tmp/AnotherRed-FINAL.apk; ls -lh /tmp/AnotherRed-FINAL.apk
       - name: Verify APK
         shell: bash
         run: |
           set -euxo pipefail
-          BT="$ANDROID_SDK_ROOT/build-tools/33.0.2"
-          "$BT/apksigner" verify --verbose --print-certs /tmp/AnotherRed-FINAL.apk
-          "$BT/aapt" dump badging /tmp/AnotherRed-FINAL.apk | head -n 8
-          SIZE=$(stat -c%s /tmp/AnotherRed-FINAL.apk)
-          echo "FINAL_APK_BYTES=$SIZE"
-          test "$SIZE" -lt 536870912
-          sha256sum /tmp/AnotherRed-FINAL.apk
-
+          BT="$ANDROID_SDK_ROOT/build-tools/33.0.2"; "$BT/apksigner" verify --verbose --print-certs /tmp/AnotherRed-FINAL.apk; "$BT/aapt" dump badging /tmp/AnotherRed-FINAL.apk | head -n 8; SIZE=$(stat -c%s /tmp/AnotherRed-FINAL.apk); echo "FINAL_APK_BYTES=$SIZE"; test "$SIZE" -lt 536870912; sha256sum /tmp/AnotherRed-FINAL.apk
       - name: Upload final APK artifact
         uses: actions/upload-artifact@v4
-        with:
-          name: AnotherRed-FINAL-APK
-          path: /tmp/AnotherRed-FINAL.apk
-          compression-level: 0
-          retention-days: 30
-          if-no-files-found: error
+        with: { name: AnotherRed-FINAL-APK, path: /tmp/AnotherRed-FINAL.apk, compression-level: 0, retention-days: 30, if-no-files-found: error }
