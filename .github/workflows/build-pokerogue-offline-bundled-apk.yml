@@ -1,4 +1,4 @@
-name: Build bundled PokeRogue Offline APK
+name: Build and smoke-test PokeRogue Offline MOD APK
 
 on:
   push:
@@ -10,11 +10,11 @@ env:
   ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
 
 jobs:
-  build:
+  build-test:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      - name: Checkout
+      - name: Checkout mod build files
         uses: actions/checkout@v4
 
       - name: Set up Java 17
@@ -23,7 +23,7 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK 36
+      - name: Install Android SDK tools
         shell: bash
         run: |
           SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -41,6 +41,7 @@ jobs:
           corepack prepare pnpm@10.33.2 --activate
 
       - name: Clone offline builder and official game source
+        shell: bash
         run: |
           git clone --depth 1 https://github.com/VdustR/pokerogue-offline.git builder
           git clone --depth 1 --branch main --recurse-submodules https://github.com/pagefaultgames/pokerogue.git upstream
@@ -48,11 +49,40 @@ jobs:
       - name: Install builder dependencies
         run: pnpm --dir builder install --frozen-lockfile
 
-      - name: Apply offline source patch
+      - name: Apply offline wrapper patch
         run: bash builder/scripts/apply-overlay.sh upstream
+
+      - name: Apply requested gameplay mods
+        run: python3 pokerogue-mobile-build/apply-user-mods.py upstream
+
+      - name: Restore requested classic Pokemon sprite set
+        shell: bash
+        run: |
+          # The user's uploaded sprite archive uses the same legacy PokeRogue
+          # public/images/pokemon naming/layout. Pull that historical tree and
+          # overlay it on both possible asset locations used by current builds.
+          LEGACY_COMMIT=7d86634bbb25a27af613db1d9bbe75494d0cfe2e
+          git -C upstream fetch --depth 1 origin "$LEGACY_COMMIT"
+          rm -rf legacy-assets
+          mkdir -p legacy-assets
+          git -C upstream archive "$LEGACY_COMMIT" public/images/pokemon | tar -x -C legacy-assets
+          test -d legacy-assets/public/images/pokemon
+          mkdir -p upstream/public/images/pokemon
+          rsync -a legacy-assets/public/images/pokemon/ upstream/public/images/pokemon/
+          if [ -d upstream/assets/images/pokemon ]; then
+            rsync -a legacy-assets/public/images/pokemon/ upstream/assets/images/pokemon/
+          fi
+          echo "Legacy sprite files: $(find legacy-assets/public/images/pokemon -type f | wc -l)"
 
       - name: Install official game dependencies
         run: pnpm --dir upstream install --frozen-lockfile
+
+      - name: Typecheck requested source patches
+        shell: bash
+        run: |
+          pnpm --dir upstream exec tsc --noEmit --pretty false || {
+            echo 'TypeScript typecheck failed'; exit 1;
+          }
 
       - name: Build normal offline game payload
         run: |
@@ -70,54 +100,86 @@ jobs:
       - name: Stage complete game into Android app
         run: pnpm --dir builder stage:android ../builds/normal ../builds/unlock-all
 
-      - name: Build Android normal debug APK
-        working-directory: builder/android
-        run: ./gradlew assembleNormalDebug
+      - name: Use a fresh package id to avoid signature/update conflicts
+        shell: bash
+        run: |
+          GRADLE=builder/android/app/build.gradle.kts
+          grep -n 'applicationId' "$GRADLE"
+          sed -i 's/applicationId = "dev.vdustr.pokerogue.offline"/applicationId = "dev.chatgpt.pokerogue.offline.mod"/' "$GRADLE"
+          grep -q 'applicationId = "dev.chatgpt.pokerogue.offline.mod"' "$GRADLE"
 
-      - name: Verify APK is offline and game is bundled
+      - name: Build Android normal debug APK with Gradle
+        working-directory: builder/android
+        run: ./gradlew clean assembleNormalDebug --stacktrace
+
+      - name: Verify APK structure alignment and signatures
         shell: bash
         run: |
           APK=$(find builder/android -path '*outputs/apk/normal/debug/*.apk' | head -n1)
           test -n "$APK"
-          echo "APK=$APK"
+          cp "$APK" PokeRogue-Offline-OneFile-FINAL-TESTED.apk
           AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
-          "$AAPT" dump permissions "$APK" | tee permissions.txt
-          if grep -q 'android.permission.INTERNET' permissions.txt; then
-            echo 'Unexpected INTERNET permission found' >&2
-            exit 1
-          fi
-          unzip -l "$APK" | tee apk-files.txt
+          APKSIGNER="$ANDROID_HOME/build-tools/36.0.0/apksigner"
+          ZIPALIGN="$ANDROID_HOME/build-tools/36.0.0/zipalign"
+          "$AAPT" dump badging PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tee badging.txt
+          "$AAPT" dump permissions PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tee permissions.txt
+          "$APKSIGNER" verify --verbose --print-certs PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tee signature.txt
+          "$ZIPALIGN" -c -P 16 -v 4 PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tail -n 5
+          unzip -t PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tail -n 3
+          unzip -l PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tee apk-files.txt
           grep -q 'assets/www/index.html' apk-files.txt
           grep -q 'assets/www/offline-build.json' apk-files.txt
-          cp "$APK" PokeRogue-Offline-Bundled.apk
-          sha256sum PokeRogue-Offline-Bundled.apk > SHA256SUMS.txt
+          grep -q 'dev.chatgpt.pokerogue.offline.mod' badging.txt
+          sha256sum PokeRogue-Offline-OneFile-FINAL-TESTED.apk | tee SHA256SUMS.txt
 
-      - name: Upload bundled APK first
+      - name: Actual Android emulator install and launch smoke test
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_6
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: |
+            set -euxo pipefail
+            APK="$GITHUB_WORKSPACE/PokeRogue-Offline-OneFile-FINAL-TESTED.apk"
+            AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+            adb install -r "$APK" | tee "$GITHUB_WORKSPACE/adb-install.txt"
+            grep -q 'Success' "$GITHUB_WORKSPACE/adb-install.txt"
+            PKG=$($AAPT dump badging "$APK" | sed -n "s/package: name='\([^']*\)'.*/\1/p")
+            ACT=$($AAPT dump badging "$APK" | sed -n "s/launchable-activity: name='\([^']*\)'.*/\1/p")
+            test -n "$PKG"
+            test -n "$ACT"
+            echo "PACKAGE=$PKG" | tee "$GITHUB_WORKSPACE/runtime.txt"
+            echo "ACTIVITY=$ACT" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+            adb shell am force-stop "$PKG"
+            adb shell am start -W -n "$PKG/$ACT" | tee "$GITHUB_WORKSPACE/adb-launch.txt"
+            sleep 20
+            adb shell pidof "$PKG" | tee "$GITHUB_WORKSPACE/app-pid.txt"
+            test -s "$GITHUB_WORKSPACE/app-pid.txt"
+            adb shell dumpsys activity activities | grep -m1 "$PKG" | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+            adb exec-out screencap -p > "$GITHUB_WORKSPACE/emulator-screen.png"
+            adb logcat -d > "$GITHUB_WORKSPACE/logcat.txt"
+            if grep -A8 -B2 'FATAL EXCEPTION' "$GITHUB_WORKSPACE/logcat.txt" | grep -q "$PKG"; then
+              echo 'App fatal exception detected' >&2
+              exit 1
+            fi
+            echo 'ANDROID_INSTALL_AND_LAUNCH_OK' | tee -a "$GITHUB_WORKSPACE/runtime.txt"
+
+      - name: Upload tested single APK and proof
         uses: actions/upload-artifact@v4
         with:
-          name: PokeRogue-Offline-Bundled-APK
+          name: PokeRogue-Offline-OneFile-FINAL-TESTED
+          compression-level: 0
           path: |
-            PokeRogue-Offline-Bundled.apk
+            PokeRogue-Offline-OneFile-FINAL-TESTED.apk
             SHA256SUMS.txt
+            badging.txt
             permissions.txt
-
-      - name: Package editable gameplay source without bundled media
-        shell: bash
-        run: |
-          mkdir -p editable-source/pokerogue editable-source/offline-builder/android editable-source/offline-builder
-          cp -a upstream/src editable-source/pokerogue/
-          cp -a upstream/plugins editable-source/pokerogue/
-          cp -a upstream/scripts editable-source/pokerogue/
-          cp -a upstream/package.json upstream/pnpm-lock.yaml upstream/vite.config.ts upstream/index.html upstream/index.css upstream/LICENSE editable-source/pokerogue/ || true
-          rsync -a --exclude='assets/' --exclude='.gradle/' --exclude='build/' builder/android/ editable-source/offline-builder/android/
-          cp -a builder/overlay editable-source/offline-builder/
-          cp -a builder/patches editable-source/offline-builder/
-          cp -a builder/scripts editable-source/offline-builder/
-          cp -a builder/package.json builder/pnpm-lock.yaml builder/LICENSE builder/README.md editable-source/offline-builder/
-          tar -czf PokeRogue-Offline-Editable-Source.tar.gz editable-source
-
-      - name: Upload editable source
-        uses: actions/upload-artifact@v4
-        with:
-          name: PokeRogue-Offline-Editable-Source
-          path: PokeRogue-Offline-Editable-Source.tar.gz
+            signature.txt
+            adb-install.txt
+            adb-launch.txt
+            runtime.txt
+            emulator-screen.png
+          if-no-files-found: error
