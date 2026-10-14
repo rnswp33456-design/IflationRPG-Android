@@ -40,14 +40,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: pokerogue-onefile-final-20261015
+          REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" PokeRogue-Offline-OneFile-FINAL.apk --clobber
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release upload "$TAG" PokeRogue-Offline-OneFile-FINAL.apk --clobber --repo "$REPO"
           else
             gh release create "$TAG" PokeRogue-Offline-OneFile-FINAL.apk \
+              --repo "$REPO" \
               --target "${GITHUB_SHA}" \
               --title "PokeRogue Offline OneFile FINAL" \
               --notes "Single-file Android APK from final build artifact."
           fi
-          gh release view "$TAG" --json url,assets
+          gh release view "$TAG" --repo "$REPO" --json url,assets
