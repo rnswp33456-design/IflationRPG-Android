@@ -5,6 +5,10 @@ on:
     branches: [chatgpt-pokerogue-mobile-apk]
   workflow_dispatch:
 
+env:
+  ANDROID_HOME: /usr/local/lib/android/sdk
+  ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -14,21 +18,22 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
       - name: Install Android SDK 36
-        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+        shell: bash
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          yes | "$SDKMANAGER" --licenses >/dev/null || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
-          node-version: '24.9.0'
+          node-version: '24'
 
       - name: Enable pnpm
         run: |
@@ -49,32 +54,41 @@ jobs:
       - name: Install official game dependencies
         run: pnpm --dir upstream install --frozen-lockfile
 
-      - name: Build complete offline game payload
-        run: pnpm --dir upstream build:offline
+      - name: Build normal offline game payload
+        run: |
+          pnpm --dir upstream build:offline
+          mkdir -p builds/normal
+          cp -a upstream/dist/. builds/normal/
+
+      - name: Build unlock-all payload required by Android staging
+        run: |
+          rm -rf upstream/dist
+          pnpm --dir upstream build:offline:unlock-all
+          mkdir -p builds/unlock-all
+          cp -a upstream/dist/. builds/unlock-all/
 
       - name: Stage complete game into Android app
-        run: |
-          mkdir -p builds/normal builds/unlock-all
-          cp -a upstream/dist/. builds/normal/
-          cp -a upstream/dist/. builds/unlock-all/
-          pnpm --dir builder stage:android ../builds/normal ../builds/unlock-all
+        run: pnpm --dir builder stage:android ../builds/normal ../builds/unlock-all
 
-      - name: Build Android debug APK
+      - name: Build Android normal debug APK
         working-directory: builder/android
         run: ./gradlew assembleNormalDebug
 
-      - name: Verify APK is offline and bundled
+      - name: Verify APK is offline and game is bundled
+        shell: bash
         run: |
           APK=$(find builder/android -path '*outputs/apk/normal/debug/*.apk' | head -n1)
           test -n "$APK"
           echo "APK=$APK"
-          aapt dump permissions "$APK" | tee permissions.txt
+          AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
+          "$AAPT" dump permissions "$APK" | tee permissions.txt
           if grep -q 'android.permission.INTERNET' permissions.txt; then
             echo 'Unexpected INTERNET permission found' >&2
             exit 1
           fi
           unzip -l "$APK" | tee apk-files.txt
           grep -q 'assets/www/index.html' apk-files.txt
+          grep -q 'assets/www/offline-build.json' apk-files.txt
           cp "$APK" PokeRogue-Offline-Bundled.apk
           sha256sum PokeRogue-Offline-Bundled.apk > SHA256SUMS.txt
 
