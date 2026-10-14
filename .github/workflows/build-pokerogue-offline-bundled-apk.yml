@@ -30,6 +30,14 @@ jobs:
           yes | "$SDKMANAGER" --licenses >/dev/null || true
           "$SDKMANAGER" "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
+      - name: Enable KVM hardware acceleration
+        shell: bash
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm || true
+          ls -l /dev/kvm || true
+
       - name: Set up Node 24
         uses: actions/setup-node@v4
         with:
@@ -58,9 +66,6 @@ jobs:
       - name: Restore requested classic Pokemon sprite set
         shell: bash
         run: |
-          # The user's uploaded sprite archive uses the same legacy PokeRogue
-          # public/images/pokemon naming/layout. Pull that historical tree and
-          # overlay it on both possible asset locations used by current builds.
           LEGACY_COMMIT=7d86634bbb25a27af613db1d9bbe75494d0cfe2e
           git -C upstream fetch --depth 1 origin "$LEGACY_COMMIT"
           rm -rf legacy-assets
@@ -140,12 +145,14 @@ jobs:
           arch: x86_64
           profile: pixel_6
           disable-animations: true
+          emulator-boot-timeout: 900
+          disk-size: 8192M
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: |
             set -euxo pipefail
             APK="$GITHUB_WORKSPACE/PokeRogue-Offline-OneFile-FINAL-TESTED.apk"
             AAPT="$ANDROID_HOME/build-tools/36.0.0/aapt"
-            adb install -r "$APK" | tee "$GITHUB_WORKSPACE/adb-install.txt"
+            adb install -r -t "$APK" | tee "$GITHUB_WORKSPACE/adb-install.txt"
             grep -q 'Success' "$GITHUB_WORKSPACE/adb-install.txt"
             PKG=$($AAPT dump badging "$APK" | sed -n "s/package: name='\([^']*\)'.*/\1/p")
             ACT=$($AAPT dump badging "$APK" | sed -n "s/launchable-activity: name='\([^']*\)'.*/\1/p")
