@@ -1,0 +1,53 @@
+name: Publish PokeRogue FINAL one-file APK
+
+on:
+  push:
+    branches:
+      - chatgpt-pokerogue-mobile-apk
+    paths:
+      - .github/workflows/publish-pokerogue-final-apk.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download existing final APK artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          ARTIFACT_ID: "11923034268"
+        run: |
+          set -euo pipefail
+          curl -fL \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "https://api.github.com/repos/${REPO}/actions/artifacts/${ARTIFACT_ID}/zip" \
+            -o artifact.zip
+          mkdir extracted
+          unzip -q artifact.zip -d extracted
+          APK="$(find extracted -type f -name '*.apk' | head -n 1)"
+          test -n "$APK"
+          cp "$APK" PokeRogue-Offline-OneFile-FINAL.apk
+          ls -lh PokeRogue-Offline-OneFile-FINAL.apk
+
+      - name: Publish direct APK release asset
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: pokerogue-onefile-final-20261015
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" PokeRogue-Offline-OneFile-FINAL.apk --clobber
+          else
+            gh release create "$TAG" PokeRogue-Offline-OneFile-FINAL.apk \
+              --target "${GITHUB_SHA}" \
+              --title "PokeRogue Offline OneFile FINAL" \
+              --notes "Single-file Android APK from final build artifact."
+          fi
+          gh release view "$TAG" --json url,assets
