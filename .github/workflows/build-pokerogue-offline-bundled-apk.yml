@@ -92,22 +92,7 @@ jobs:
           cp "$APK" PokeRogue-Offline-Bundled.apk
           sha256sum PokeRogue-Offline-Bundled.apk > SHA256SUMS.txt
 
-      - name: Package editable gameplay source
-        run: |
-          mkdir -p editable-source/pokerogue editable-source/offline-builder
-          cp -a upstream/src editable-source/pokerogue/
-          cp -a upstream/plugins editable-source/pokerogue/
-          cp -a upstream/scripts editable-source/pokerogue/
-          cp -a upstream/package.json upstream/pnpm-lock.yaml upstream/vite.config.ts upstream/index.html upstream/index.css upstream/LICENSE editable-source/pokerogue/ || true
-          cp -a builder/android editable-source/offline-builder/
-          cp -a builder/overlay editable-source/offline-builder/
-          cp -a builder/patches editable-source/offline-builder/
-          cp -a builder/scripts editable-source/offline-builder/
-          cp -a builder/package.json builder/pnpm-lock.yaml builder/LICENSE builder/README.md editable-source/offline-builder/
-          rm -rf editable-source/offline-builder/android/.gradle editable-source/offline-builder/android/build
-          tar -czf PokeRogue-Offline-Editable-Source.tar.gz editable-source
-
-      - name: Upload bundled APK
+      - name: Upload bundled APK first
         uses: actions/upload-artifact@v4
         with:
           name: PokeRogue-Offline-Bundled-APK
@@ -115,6 +100,21 @@ jobs:
             PokeRogue-Offline-Bundled.apk
             SHA256SUMS.txt
             permissions.txt
+
+      - name: Package editable gameplay source without bundled media
+        shell: bash
+        run: |
+          mkdir -p editable-source/pokerogue editable-source/offline-builder/android editable-source/offline-builder
+          cp -a upstream/src editable-source/pokerogue/
+          cp -a upstream/plugins editable-source/pokerogue/
+          cp -a upstream/scripts editable-source/pokerogue/
+          cp -a upstream/package.json upstream/pnpm-lock.yaml upstream/vite.config.ts upstream/index.html upstream/index.css upstream/LICENSE editable-source/pokerogue/ || true
+          rsync -a --exclude='assets/' --exclude='.gradle/' --exclude='build/' builder/android/ editable-source/offline-builder/android/
+          cp -a builder/overlay editable-source/offline-builder/
+          cp -a builder/patches editable-source/offline-builder/
+          cp -a builder/scripts editable-source/offline-builder/
+          cp -a builder/package.json builder/pnpm-lock.yaml builder/LICENSE builder/README.md editable-source/offline-builder/
+          tar -czf PokeRogue-Offline-Editable-Source.tar.gz editable-source
 
       - name: Upload editable source
         uses: actions/upload-artifact@v4
