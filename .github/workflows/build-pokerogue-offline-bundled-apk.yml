@@ -1,0 +1,109 @@
+name: Build bundled PokeRogue Offline APK
+
+on:
+  push:
+    branches: [chatgpt-pokerogue-mobile-apk]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.9.0'
+
+      - name: Enable pnpm
+        run: |
+          corepack enable
+          corepack prepare pnpm@10.33.2 --activate
+
+      - name: Clone offline builder and official game source
+        run: |
+          git clone --depth 1 https://github.com/VdustR/pokerogue-offline.git builder
+          git clone --depth 1 --branch main --recurse-submodules https://github.com/pagefaultgames/pokerogue.git upstream
+
+      - name: Install builder dependencies
+        run: pnpm --dir builder install --frozen-lockfile
+
+      - name: Apply offline source patch
+        run: bash builder/scripts/apply-overlay.sh upstream
+
+      - name: Install official game dependencies
+        run: pnpm --dir upstream install --frozen-lockfile
+
+      - name: Build complete offline game payload
+        run: pnpm --dir upstream build:offline
+
+      - name: Stage complete game into Android app
+        run: |
+          mkdir -p builds/normal builds/unlock-all
+          cp -a upstream/dist/. builds/normal/
+          cp -a upstream/dist/. builds/unlock-all/
+          pnpm --dir builder stage:android ../builds/normal ../builds/unlock-all
+
+      - name: Build Android debug APK
+        working-directory: builder/android
+        run: ./gradlew assembleNormalDebug
+
+      - name: Verify APK is offline and bundled
+        run: |
+          APK=$(find builder/android -path '*outputs/apk/normal/debug/*.apk' | head -n1)
+          test -n "$APK"
+          echo "APK=$APK"
+          aapt dump permissions "$APK" | tee permissions.txt
+          if grep -q 'android.permission.INTERNET' permissions.txt; then
+            echo 'Unexpected INTERNET permission found' >&2
+            exit 1
+          fi
+          unzip -l "$APK" | tee apk-files.txt
+          grep -q 'assets/www/index.html' apk-files.txt
+          cp "$APK" PokeRogue-Offline-Bundled.apk
+          sha256sum PokeRogue-Offline-Bundled.apk > SHA256SUMS.txt
+
+      - name: Package editable gameplay source
+        run: |
+          mkdir -p editable-source/pokerogue editable-source/offline-builder
+          cp -a upstream/src editable-source/pokerogue/
+          cp -a upstream/plugins editable-source/pokerogue/
+          cp -a upstream/scripts editable-source/pokerogue/
+          cp -a upstream/package.json upstream/pnpm-lock.yaml upstream/vite.config.ts upstream/index.html upstream/index.css upstream/LICENSE editable-source/pokerogue/ || true
+          cp -a builder/android editable-source/offline-builder/
+          cp -a builder/overlay editable-source/offline-builder/
+          cp -a builder/patches editable-source/offline-builder/
+          cp -a builder/scripts editable-source/offline-builder/
+          cp -a builder/package.json builder/pnpm-lock.yaml builder/LICENSE builder/README.md editable-source/offline-builder/
+          rm -rf editable-source/offline-builder/android/.gradle editable-source/offline-builder/android/build
+          tar -czf PokeRogue-Offline-Editable-Source.tar.gz editable-source
+
+      - name: Upload bundled APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: PokeRogue-Offline-Bundled-APK
+          path: |
+            PokeRogue-Offline-Bundled.apk
+            SHA256SUMS.txt
+            permissions.txt
+
+      - name: Upload editable source
+        uses: actions/upload-artifact@v4
+        with:
+          name: PokeRogue-Offline-Editable-Source
+          path: PokeRogue-Offline-Editable-Source.tar.gz
